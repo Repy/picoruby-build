@@ -17,11 +17,12 @@ tar xf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz
 export PATH=$(pwd)/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi/bin:$PATH
 
 git clone https://github.com/picoruby/R2P2.git -b 0.4.1
+sed -i 's/git\@github\.com\:/https:\/\/github.com\//g' R2P2/.gitmodules
 (cd R2P2; git submodule update --init)
+sed -i 's/git\@github\.com\:/https:\/\/github.com\//g' R2P2/lib/picoruby/.gitmodules
 (cd R2P2/lib/picoruby; git submodule update --init)
+(cd R2P2/lib/picoruby/mrbgems/mruby-compiler2; git submodule update --init)
 
-(cd R2P2; rake setup; rake pico_w)
+(cd R2P2; rake setup; rake mrubyc:pico_w:production)
 
 (cd R2P2; rake clean)
-
-
