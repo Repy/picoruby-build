@@ -16,7 +16,7 @@ tar xf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz
 
 export PATH=$(pwd)/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi/bin:$PATH
 
-git clone https://github.com/picoruby/R2P2.git
+git clone https://github.com/picoruby/R2P2.git -b 0.4.1
 (cd R2P2; git submodule update --init)
 (cd R2P2/lib/picoruby; git submodule update --init)
 
