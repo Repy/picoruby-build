@@ -1,0 +1,300 @@
+diff --git a/.gitmodules b/.gitmodules
+index ca83ead7..19210eda 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -9,7 +9,7 @@
+ 	url = https://github.com/picoruby/estalloc
+ [submodule "mrbgems/mruby-compiler2"]
+ 	path = mrbgems/mruby-compiler2
+-	url = git@github.com:picoruby/mruby-compiler2
++	url = https://github.com/picoruby/mruby-compiler2
+ [submodule "mrbgems/mruby-bin-mrbc2"]
+ 	path = mrbgems/mruby-bin-mrbc2
+-	url = git@github.com:picoruby/mruby-bin-mrbc2
++	url = https://github.com/picoruby/mruby-bin-mrbc2
+diff --git a/mrbgems/picoruby-net/include/net.h b/mrbgems/picoruby-net/include/net.h
+index 40211e4c..89818c09 100644
+--- a/mrbgems/picoruby-net/include/net.h
++++ b/mrbgems/picoruby-net/include/net.h
+@@ -46,6 +46,27 @@ void lwip_end(void);
+ void Net_sleep_ms(int);
+ err_t Net_get_ip(const char *name, ip_addr_t *ip);
+ 
++typedef struct
++{
++  char *recv_data;
++  size_t recv_data_len;
++  ip_addr_t remote_ip;
++  u16_t remote_port;
++} udp_server_recv_data;
++
++typedef struct
++{
++  mrb_state *mrb;
++  struct udp_pcb *pcb;
++  udp_server_recv_data *recv_data[50];
++  int recv_data_len;
++} udp_server_state;
++
++udp_server_state * UDPServer_bind(mrb_state *mrb, int port);
++udp_server_recv_data * UDPServer_receive(mrb_state *mrb, udp_server_state *ss);
++void UDPServer_data_free(mrb_state *mrb, udp_server_recv_data *data);
++void UDPServer_close(mrb_state *mrb, udp_server_state *ss);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/mrbgems/picoruby-net/mrblib/net.rb b/mrbgems/picoruby-net/mrblib/net.rb
+index 6f8b5644..cb3c0bbf 100644
+--- a/mrbgems/picoruby-net/mrblib/net.rb
++++ b/mrbgems/picoruby-net/mrblib/net.rb
+@@ -47,6 +47,15 @@ module Net
+     end
+   end
+ 
++  class UDPServer
++    def initialize(port)
++      @ss = UDPServer_impl._bind_impl(port)
++    end
++    def receive()
++      UDPServer_impl._receive_impl(@ss)
++    end
++  end
++
+   class TCPClient
+     def self.request(host, port, content, is_tls)
+       # ip = DNS.resolve(host, true)
+diff --git a/mrbgems/picoruby-net/sig/net.rbs b/mrbgems/picoruby-net/sig/net.rbs
+index 25591c45..7d58dc2a 100644
+--- a/mrbgems/picoruby-net/sig/net.rbs
++++ b/mrbgems/picoruby-net/sig/net.rbs
+@@ -19,6 +19,16 @@ module Net
+     private def self._send_impl: (String host, Integer port, String content, bool is_dtls) -> String?
+   end
+ 
++  class UDPServer
++    def initialize: (Integer port) -> void
++    def receive: () -> String?
++  end
++
++  class UDPServer_impl
++    def self._bind_impl: (Integer port) -> void
++    def self._receive_impl: (UDPServer ss) -> String?
++  end
++
+   class TCPClient
+     def self.request: (String host, Integer port, String content, bool is_tls) -> String?
+     private def self._request_impl: (String host, Integer port, String content, bool is_tls) -> String?
+diff --git a/mrbgems/picoruby-net/src/mrubyc/net.c b/mrbgems/picoruby-net/src/mrubyc/net.c
+index 2cc24bca..79ace4df 100644
+--- a/mrbgems/picoruby-net/src/mrubyc/net.c
++++ b/mrbgems/picoruby-net/src/mrubyc/net.c
+@@ -124,6 +124,58 @@ c_net_udpclient__send_impl(mrbc_vm *vm, mrbc_value *v, int argc)
+   mrbc_free(vm, res.recv_data);
+ }
+ 
++static void
++c_net_udpserver__bind_impl(mrbc_vm *vm, mrbc_value *v, int argc)
++{
++  if (argc != 1) {
++    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
++    return;
++  }
++  mrbc_value port_arg = GET_ARG(1);
++  if (port_arg.tt != MRBC_TT_INTEGER) {
++    mrbc_raise(vm, MRBC_CLASS(TypeError), "wrong type of argument for port");
++    return;
++  }
++  int port = port_arg.i;
++
++  udp_server_state *ss = UDPServer_bind(vm, port);
++
++  if (ss) {
++    mrbc_value value = mrbc_instance_new(vm, v->cls, sizeof(udp_server_state *));
++    *(udp_server_state **)value.instance->data = ss;
++    SET_RETURN(value);
++  } else {
++    SET_NIL_RETURN();
++  }
++}
++
++static void
++c_net_udpserver__receive_impl(mrbc_vm *vm, mrbc_value *v, int argc)
++{
++  if (argc != 1) {
++    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
++    return;
++  }
++  mrbc_value ss = GET_ARG(1);
++  if (ss.tt != MRBC_TT_OBJECT) {
++    mrbc_raise(vm, MRBC_CLASS(TypeError), "wrong type of argument for ss");
++    return;
++  }
++  udp_server_state *server = *(udp_server_state **)ss.instance->data;
++
++  udp_server_recv_data *rd = UDPServer_receive(vm, server);
++  if (!rd) {
++    SET_NIL_RETURN();
++    return;
++  }
++
++  mrb_value ret = mrbc_string_new(vm, rd->recv_data, rd->recv_data_len);
++
++  UDPServer_data_free(vm, rd);
++
++  SET_RETURN(ret);
++}
++
+ void
+ mrbc_net_init(mrbc_vm *vm)
+ {
+@@ -137,4 +189,8 @@ mrbc_net_init(mrbc_vm *vm)
+ 
+   mrbc_class *class_Net_UDPClient = mrbc_define_class_under(vm, module_Net, "UDPClient", mrbc_class_object);
+   mrbc_define_method(vm, class_Net_UDPClient, "_send_impl", c_net_udpclient__send_impl);
++
++  mrbc_class *class_Net_UDPServer_impl = mrbc_define_class_under(vm, module_Net, "UDPServer_impl", mrbc_class_object);
++  mrbc_define_method(vm, class_Net_UDPServer_impl, "_bind_impl", c_net_udpserver__bind_impl);
++  mrbc_define_method(vm, class_Net_UDPServer_impl, "_receive_impl", c_net_udpserver__receive_impl);
+ }
+diff --git a/mrbgems/picoruby-net/src/udp_server.c b/mrbgems/picoruby-net/src/udp_server.c
+new file mode 100644
+index 00000000..03f5b5f1
+--- /dev/null
++++ b/mrbgems/picoruby-net/src/udp_server.c
+@@ -0,0 +1,134 @@
++#include "../include/net.h"
++#include "lwip/udp.h"
++
++static void
++udp_receive_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
++{
++  udp_server_state *ss = arg;
++  
++  picorb_warn("UDPServer udp_receive_callback: input %p\n", ss);
++
++  if (!p) {
++    return;
++  }
++
++  if (!ss) {
++    pbuf_free(p);
++    return;
++  }
++
++  /* allocate new recv entry */
++  udp_server_recv_data *rd = (udp_server_recv_data *)picorb_alloc(ss->mrb, sizeof(udp_server_recv_data));
++  if (!rd) {
++    picorb_warn("udp_receive_callback: failed to allocate recv_data struct\n");
++    pbuf_free(p);
++    return;
++  }
++
++  rd->recv_data_len = p->tot_len;
++  rd->recv_data = (char *)picorb_alloc(ss->mrb, rd->recv_data_len + 1); /* +1 for NUL */
++  if (!rd->recv_data) {
++    picorb_warn("udp_receive_callback: failed to allocate recv_data buffer\n");
++    /* picorb_alloc failure: free rd? picorb_alloc likely uses mruby arena; just warn and return */
++    pbuf_free(p);
++    return;
++  }
++
++  /* copy possibly-chained pbuf into contiguous buffer */
++  pbuf_copy_partial(p, rd->recv_data, rd->recv_data_len, 0);
++  rd->recv_data[rd->recv_data_len] = '\0';
++
++  pbuf_free(p);
++  
++  /* record remote endpoint */
++  rd->remote_ip = *addr;
++  rd->remote_port = port;
++
++  /* add rd to ss->recv_data array */
++  if (ss->recv_data_len < 50) {
++    ss->recv_data[ss->recv_data_len++] = rd;
++  } else {
++    picorb_warn("udp_receive_callback: recv_data array full\n");
++    UDPServer_data_free(ss->mrb, rd);
++  }
++
++}
++
++udp_server_state *
++UDPServer_bind(mrb_state *mrb, int port)
++{
++  udp_server_state *ss = (udp_server_state *)picorb_alloc(mrb, sizeof(udp_server_state));
++  if (!ss) {
++    picorb_warn("Failed to allocate udp_server_state\n");
++    return NULL;
++  }
++
++  struct udp_pcb *pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
++  if (pcb == NULL) {
++    picorb_warn("Failed to create new connection\n");
++    return NULL;
++  }
++
++  err_t err = udp_bind(pcb, IP_ANY_TYPE, port);
++  if (err != ERR_OK) {
++    picorb_warn("Failed to bind\n");
++    return NULL;
++  }
++
++  udp_recv(pcb, udp_receive_callback, ss);
++  ss->pcb = pcb;
++  ss->mrb = mrb;
++  ss->recv_data[0] = NULL;
++  ss->recv_data_len = 0;
++
++  picorb_warn("UDPServer_bind: return %p\n", ss);
++
++  return ss;
++}
++
++udp_server_recv_data *
++UDPServer_receive(mrb_state *mrb, udp_server_state *ss)
++{
++  picorb_warn("UDPServer_receive: input %p\n", ss);
++
++  if (!ss) return NULL;
++
++  /* take first entry */
++  if (ss->recv_data_len == 0) return NULL;
++
++  udp_server_recv_data *rd = ss->recv_data[0];
++  
++  /* shift remaining entries left by one */
++  ss->recv_data_len--;
++  memmove(&ss->recv_data[0], &ss->recv_data[1], sizeof(*ss->recv_data) * (ss->recv_data_len));
++  ss->recv_data[ss->recv_data_len] = NULL;
++
++  return rd;
++}
++
++void
++UDPServer_data_free(mrb_state *mrb, udp_server_recv_data *data)
++{
++  if (!data) return;
++  picorb_free(mrb, data->recv_data);
++  picorb_free(mrb, data);
++}
++
++void
++UDPServer_close(mrb_state *mrb, udp_server_state *ss)
++{
++  if (!ss) return;
++
++  /* remove UDP PCB (stops callbacks and frees pcb) */
++  if (ss->pcb) {
++    udp_remove(ss->pcb);
++    ss->pcb = NULL;
++  }
++
++  for (int i = 0; i < ss->recv_data_len; i++) {
++    UDPServer_data_free(mrb, ss->recv_data[i]);
++    ss->recv_data[i] = NULL;
++  }
++
++  picorb_free(mrb, ss);
++}
+\ No newline at end of file
